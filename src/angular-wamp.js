@@ -236,26 +236,31 @@ if (typeof module !== "undefined" && typeof exports !== "undefined" && module.ex
             options = angular.extend({onchallenge: digestWrapper(onchallenge), use_deferred: $q.defer}, options);
 
             connection = new autobahn.Connection(options);
-            connection.onopen = digestWrapper(function (session, details) {
-                $log.debug("Congrats!  You're connected to the WAMP server!");
-                $rootScope.$broadcast("$wamp.open", {session: session, details: details});
-                sessionDeferred.resolve();
-            });
 
-            connection.onclose = digestWrapper(function (reason, details) {
-                $log.debug("Connection Closed: ", reason, details);
+            function bindOpenClose() {
+              connection.onopen = digestWrapper(function (session, details) {
+                  $log.debug("Congrats!  You're connected to the WAMP server!");
+                  $rootScope.$broadcast("$wamp.open", {session: session, details: details});
+                  sessionDeferred.resolve();
+              });
 
-                //Reject outstanding RPC calls
-                for (var key in connection.session._call_reqs) {
-                    if (connection.session._call_reqs.hasOwnProperty(key)) {
-                        var error = new Error("Connection Closed");
-                        var call = connection.session._call_reqs[key];
-                        call[0].reject(error);
-                    }
-                }
+              connection.onclose = digestWrapper(function (reason, details) {
+                  $log.debug("Connection Closed: ", reason, details);
 
-                $rootScope.$broadcast("$wamp.close", {reason: reason, details: details});
-            });
+                  //Reject outstanding RPC calls
+                  for (var key in connection.session._call_reqs) {
+                      if (connection.session._call_reqs.hasOwnProperty(key)) {
+                          var error = new Error("Connection Closed");
+                          var call = connection.session._call_reqs[key];
+                          call[0].reject(error);
+                      }
+                  }
+
+                  $rootScope.$broadcast("$wamp.close", {reason: reason, details: details});
+              });
+            }
+
+            bindOpenClose();
 
 
             /**
@@ -370,14 +375,31 @@ if (typeof module !== "undefined" && typeof exports !== "undefined" && module.ex
                 return action;
             };
 
-            return {
-                connection: connection,
+            var svc = {
                 open: function () {
                     //If using WAMP CRA we need to get the authid before the connection can be opened.
                     if (options.authmethods && options.authmethods.indexOf('wampcra') !== -1 && !options.authid) {
                         $log.debug("You're using WAMP CRA.  The authid must be set on $wamp before the connection can be opened, ie: $wamp.setAuthId('john.doe')");
                     } else {
                         connection.open();
+                    }
+                },
+                openNewConnection : function(newOptions, open, stopOldConnectionBroadcast) {
+                    //close old connection
+                    if (connection.isOpen) {
+                       connection.close();
+                       //oldConnection.onclose will emit
+                    }
+                    options = newOptions;
+                    options = angular.extend({onchallenge: digestWrapper(onchallenge), use_deferred: $q.defer}, options);
+                    if (stopOldConnectionBroadcast) {
+                        connection.onclose = null;
+                        connection.onopen = null;
+                    }
+                    connection = new autobahn.Connection(options);
+                    bindOpenClose();
+                    if (open) {
+                        svc.open();
                     }
                 },
                 setAuthId: function (authid, open) {
@@ -429,6 +451,14 @@ if (typeof module !== "undefined" && typeof exports !== "undefined" && module.ex
                     });
                 }
             };
+
+            Object.defineProperty(svc, "connection", {
+              get: function () {
+                return connection;
+              }
+            });
+
+            return svc;
         };
 
         return this;
